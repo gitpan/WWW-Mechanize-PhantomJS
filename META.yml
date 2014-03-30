@@ -1,5 +1,5 @@
 ---
-abstract: 'automate a Selenium PhantomJS capable browser'
+abstract: 'automate the PhantomJS browser'
 author:
   - 'Max Maischein <corion@cpan.org>'
 build_requires: {}
@@ -28,4 +28,4 @@ requires:
   perl: 5.006
 resources:
   repository: http://github.com/Corion/www-mechanize-phantomjs
-version: 0.01
+version: 0.02

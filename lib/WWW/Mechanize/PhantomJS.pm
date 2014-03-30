@@ -10,47 +10,70 @@ use Carp qw(croak carp);
 use WWW::Mechanize::Link;
 
 use vars qw($VERSION %link_spec);
-$VERSION= '0.01';
+$VERSION= '0.02';
 
 =head1 NAME
 
-WWW::Mechanize::PhantomJS - automate a Selenium PhantomJS capable browser
+WWW::Mechanize::PhantomJS - automate the PhantomJS browser
+
+=head1 SYNOPSIS
+
+  use WWW::Mechanize::PhantomJS;
+  my $mech = WWW::Mechanize::PhantomJS->new();
+  $mech->get('http://google.com');
+
+  $mech->eval_in_page('alert("Hello PhantomJS")');
+  my $png= $mech->content_as_png();
+
+=head2 C<< ->new %options >>
+
+=over 4
+
+=item B<autodie>
+
+Control whether HTTP errors are fatal.
+
+  autodie => 0, # make HTTP errors non-fatal
+
+The default is to have HTTP errors fatal,
+as that makes debugging much easier than expecting
+you to actually check the results of every action.
+
+=item B<port>
+
+Specify the port where PhantomJS should listen
+
+  port => 8910
+
+=item B<log>
+
+Specify the log level of PhantomJS
+
+  log => 'OFF'
+
+=item B<launch_exe>
+
+Specify the path to the PhantomJS executable.
+
+=item B<launch_arg>
+
+Specify additional parameters to the PhantomJS executable.
+
+  launch_arg => [ "--some-new-parameter=foo" ],
+
+=item B<driver>
+
+A premade L<Selenium::Driver::Remote> object.
+
+=back
 
 =cut
-
-=head2 C<< $api->element_query( \@elements, \%attributes ) >>
-
-    my $query = $element_query(['input', 'select', 'textarea'],
-                               { name => 'foo' });
-
-Returns the XPath query that searches for all elements with C<tagName>s
-in C<@elements> having the attributes C<%attributes>. The C<@elements>
-will form an C<or> condition, while the attributes will form an C<and>
-condition.
-
-=cut
-
-sub element_query {
-    my ($self, $elements, $attributes) = @_;
-        my $query =
-            './/*[(' .
-                join( ' or ',
-                    map {
-                        sprintf qq{local-name(.)="%s"}, lc $_
-                    } @$elements
-                )
-            . ') and '
-            . join( " and ",
-                map { sprintf q{@%s="%s"}, $_, $attributes->{$_} }
-                  sort keys(%$attributes)
-            )
-            . ']';
-};
 
 sub new {
     my ($class, %options) = @_;
 
-    $options{ port } ||= 4446;
+    $options{ port } ||= 8910;
+    $options{ "log" } ||= 'OFF';
 
     if (! exists $options{ autodie }) { $options{ autodie } = 1 };
 
@@ -60,17 +83,20 @@ sub new {
 
     # Launch PhantomJs
     $options{ launch_exe } ||= 'phantomjs';
-    $options{ launch_arg } ||= [ "--PhantomJS=$options{ port }",
-                               ];
+    $options{ launch_arg } ||= [];
+    push @{ $options{ launch_arg }}, "--PhantomJS=$options{ port }";
+    push @{ $options{ launch_arg }}, "--logLevel=\U$options{ log }";
     my $cmd= "| $options{ launch_exe } @{ $options{ launch_arg } }";
+    #warn $cmd;
     $options{ pid } ||= open my $fh, $cmd
         or die "Couldn't launch [$cmd]: $! / $?";
+    sleep 2; # Just to give PhantomJS time to start up
     $options{ fh } = $fh;
 
     # Connect to it
     $options{ driver } ||= Selenium::Remote::Driver->new(
         'port' => $options{ port },
-        auto_close => 1,
+        auto_close => 0,
      );
 
      my $self= bless \%options => $class;
@@ -209,6 +235,35 @@ sub eval_in_phantomjs {
     $self->driver->_execute_command({ command => 'phantomExecute' }, $params);
 };
 
+=head2 C<< $api->element_query( \@elements, \%attributes ) >>
+
+    my $query = $element_query(['input', 'select', 'textarea'],
+                               { name => 'foo' });
+
+Returns the XPath query that searches for all elements with C<tagName>s
+in C<@elements> having the attributes C<%attributes>. The C<@elements>
+will form an C<or> condition, while the attributes will form an C<and>
+condition.
+
+=cut
+
+sub element_query {
+    my ($self, $elements, $attributes) = @_;
+        my $query =
+            './/*[(' .
+                join( ' or ',
+                    map {
+                        sprintf qq{local-name(.)="%s"}, lc $_
+                    } @$elements
+                )
+            . ') and '
+            . join( " and ",
+                map { sprintf q{@%s="%s"}, $_, $attributes->{$_} }
+                  sort keys(%$attributes)
+            )
+            . ']';
+};
+
 =head2 C<< $mech->PhantomJS_elementToJS >>
 
 Returns the Javascript fragment to turn a Selenium::Remote::PhantomJS
@@ -234,32 +289,12 @@ sub agent {
 JS
 }
 
-# Render as png
-=for png
- page.viewportSize = { width: 1024, height: 768 }
- page.open(address, function (status) {
-    if (status == 'fail') {
-       console.log('Unable to load the address! ' + address);
-       phantom.exit();
-       console.log('Unable to load the address! ' + address);
-    } else {
-     window.setTimeout(function () {
-     page.clipRect = { top: 0, left: 0, width: 990, height: 745 };
-     page.render(output);
-     console.log(status);
-     phantom.exit();
-     }, 200);
-    }
-
- });
-=cut
-
 sub events { [] };
 
 sub DESTROY {
     #warn "Destroying " . ref $_[0];
     my $pid= delete $_[0]->{pid};
-    #my $dr= delete $_[0]->{ driver };
+    eval { my $dr= delete $_[0]->{ driver }; $dr->quit; undef $dr };
     #if($dr) {
     #    $dr->quit;
     #};
@@ -268,6 +303,42 @@ sub DESTROY {
         if $pid;
     %{ $_[0] }= (); # clean out all other held references
 }
+
+=head2 C<< $mech->highlight_node( @nodes ) >>
+
+    my @links = $mech->selector('a');
+    $mech->highlight_node(@links);
+    print $mech->content_as_png();
+
+Convenience method that marks all nodes in the arguments
+with
+
+  background: red;
+  border: solid black 1px;
+  display: block; /* if the element was display: none before */
+
+This is convenient if you need visual verification that you've
+got the right nodes.
+
+There currently is no way to restore the nodes to their original
+visual state except reloading the page.
+
+=cut
+
+sub highlight_node {
+    my ($self,@nodes) = @_;
+    for (@nodes) {
+        my $style= $self->eval_in_page(<<JS, $_);
+        (function(el) {
+            if( 'none' == el.style.display ) {
+                el.style.display= 'block';
+            };
+            el.style.background= 'red';
+            el.style.border= 'solid black 1px';
+        })(arguments[0]);
+JS
+    };
+};
 
 =head1 NAVIGATION METHODS
 
@@ -1398,7 +1469,8 @@ sub xpath {
                 #warn "Collecting frames";
                 #my $tag= $doc->get_tag_name;
                 #warn "Searching $doc->{id} for @$query";
-                @found= map { $self->driver->find_elements( $_ => 'xpath' ) } @$query;
+                @found= map { defined $_ ? @$_ : () }
+                        map { scalar $self->driver->find_elements( $_ => 'xpath' ) } @$query;
                 if( ! @found ) {
                     #warn "Nothing found matching @$query in frame";
                     #warn $self->content;
@@ -2148,7 +2220,6 @@ sub submit_form {
     if (! $form) {
         if ($fields = delete $options{ with_fields }) {
             my @names = keys %$fields;
-            warn Dumper \%options;
             $form = $self->form_with_fields( \%options, @names );
             if (! $form) {
                 $self->signal_condition("Couldn't find a matching form for @names.");
@@ -2336,7 +2407,7 @@ sub make_WebElement {
     $res
 }
 
-=head1 IMAGE METHODS
+=head1 CONTENT RENDERING METHODS
 
 =head2 C<< $mech->content_as_png( [$tab, \%coordinates, \%target_size ] ) >>
 
@@ -2379,12 +2450,10 @@ original height.
 
 =back
 
-This method is specific to WWW::Mechanize::Firefox.
+This method is specific to WWW::Mechanize::PhantomJS.
 
-Currently, the data transfer between Firefox and Perl
-is done Base64-encoded. It would be beneficial to find what's
-necessary to make JSON handle binary data more gracefully.
-
+Currently, the data transfer between PhantomJS and Perl
+is done Base64-encoded.
 =cut
 
 sub content_as_png {
@@ -2393,9 +2462,10 @@ sub content_as_png {
     $rect ||= {};
     $target_rect ||= {};
     
-    require MIME::Base64;
-    my $png_base64 = $self->driver->screenshot();
-    return MIME::Base64::decode_base64($png_base64);
+    #require MIME::Base64;
+    #my $png_base64 = $self->driver->screenshot();
+    #return MIME::Base64::decode_base64($png_base64);
+    return $self->render_content( format => 'png' );
 };
 
 =head2 C<< $mech->viewport_size >>
@@ -2440,9 +2510,44 @@ JS
 
     my $old= $self->eval_in_phantomjs( $code, $cliprect );
     my $png= $self->content_as_png();
-    warn Dumper $old;
+    #warn Dumper $old;
     $self->eval_in_phantomjs( $code, $old );
     $png
+};
+
+=head2 C<< $mech->render_element( %options ) >>
+
+    my $shiny = $mech->selector('#shiny', single => 1);
+    my $i_want_this= $mech->render_element(
+        element => $shiny,
+        format => 'pdf',
+    );
+
+Returns the data for a single element
+or writes it to a file. It accepts
+all options of C<< ->render_content >>.
+
+=cut
+
+sub render_element {
+    my ($self, %options) = @_;
+    my $element= delete $options{ element }
+        or croak "No element given to render.";
+
+    my $cliprect = $self->element_coordinates( $element );
+
+    my $code = <<'JS';
+       var old= this.clipRect;
+       this.clipRect= arguments[0];
+JS
+
+    my $old= $self->eval_in_phantomjs( $code, $cliprect );
+    my $res= $self->render_content(
+        %options
+    );
+    #warn Dumper $old;
+    $self->eval_in_phantomjs( $code, $old );
+    $res
 };
 
 =head2 C<< $mech->element_coordinates( $element ) >>
@@ -2464,4 +2569,269 @@ sub element_coordinates {
     my $cliprect = $self->eval('arguments[0].getBoundingClientRect()', $element );
 };
 
+=head2 C<< $mech->render_content(%options) >>
+
+    my $pdf_data = $mech->render( format => 'pdf' );
+
+    $mech->render_content(
+        format => 'jpg',
+        filename => '/path/to/my.jpg',
+    );
+
+Returns the current page rendered in the specified format
+as a bytestring or stores the current page in the specified
+filename.
+
+The filename must be absolute. We are dealing with external processes here!
+
+This method is specific to WWW::Mechanize::PhantomJS.
+
+Currently, the data transfer between PhantomJS and Perl
+is done through a temporary file, so directly using
+the C<filename> option may be faster.
+
+=cut
+
+sub render_content {
+    my ($self, %options) = @_;
+    #$rect ||= {};
+    #$target_rect ||= {};
+    my $outname= $options{ filename };
+    my $format= $options{ format };
+    my $wantresult;
+    
+    my @delete;
+    if( ! $outname) {
+        require File::Temp;
+        (my $fh, $outname)= File::Temp::tempfile();
+        close $fh;
+        push @delete, $outname;
+        $wantresult= 1;
+    };
+    require File::Spec;
+    $outname= File::Spec->rel2abs($outname, '.');
+    
+    $self->eval_in_phantomjs(<<'JS', $outname, $format);
+        var outname= arguments[0];
+        var format= arguments[1];
+        this.render( outname, { "format": format });
+JS
+
+    my $result;
+    if( $wantresult ) {
+        open my $fh, '<', $outname
+            or die "Couldn't read tempfile '$outname': $!";
+        binmode $fh, ':raw';
+        local $/;
+        $result= <$fh>;
+    };
+    
+    for( @delete ) {
+        unlink $_
+            or warn "Couldn't clean up tempfile: $_': $!";
+    };
+    $result
+}
+
+=head2 C<< $mech->content_as_pdf(%options) >>
+
+    my $pdf_data = $mech->content_as_pdf();
+
+    $mech->content_as_pdf(
+        filename => '/path/to/my.pdf',
+    );
+
+Returns the current page rendered in PDF format as a bytestring.
+
+This method is specific to WWW::Mechanize::PhantomJS.
+
+Currently, the data transfer between PhantomJS and Perl
+is done through a temporary file, so directly using
+the C<filename> option may be faster.
+
+=cut
+
+sub content_as_pdf {
+    my ($self, %options) = @_;
+    
+    return $self->render_content( format => 'pdf', %options );
+};
+
 1;
+
+=head1 INCOMPATIBILITIES WITH WWW::Mechanize
+
+As this module is in a very early stage of development,
+there are many incompatibilities. The main thing is
+that only the most needed WWW::Mechanize methods
+have been implemented by me so far.
+
+=head2 Unsupported Methods
+
+At least the following methods are unsupported:
+
+=over 4
+
+=item *
+
+C<< ->find_all_inputs >>
+
+This function is likely best implemented through C<< $mech->selector >>.
+
+=item *
+
+C<< ->find_all_submits >>
+
+This function is likely best implemented through C<< $mech->selector >>.
+
+=item *
+
+C<< ->images >>
+
+This function is likely best implemented through C<< $mech->selector >>.
+
+=item *
+
+C<< ->find_image >>
+
+This function is likely best implemented through C<< $mech->selector >>.
+
+=item *
+
+C<< ->find_all_images >>
+
+This function is likely best implemented through C<< $mech->selector >>.
+
+=back
+
+=head2 Functions that will likely never be implemented
+
+These functions are unlikely to be implemented because
+they make little sense in the context of PhantomJS.
+
+=over 4
+
+=item *
+
+C<< ->clone >>
+
+=item *
+
+C<< ->credentials( $username, $password ) >>
+
+=item *
+
+C<< ->get_basic_credentials( $realm, $uri, $isproxy ) >>
+
+=item *
+
+C<< ->clear_credentials() >>
+
+=item *
+
+C<< ->put >>
+
+I have no use for it
+
+=item *
+
+C<< ->post >>
+
+I have no use for it
+
+=back
+
+=head1 TODO
+
+=over 4
+
+=item *
+
+Add C<< limit >> parameter to C<< ->xpath() >> to allow an early exit-case
+when searching through frames.
+
+=item *
+
+Implement download progress
+
+=back
+
+=head1 INSTALLING
+
+=over 4
+
+=item *
+
+Install the C<PhantomJS> executable
+
+=item *
+
+Copy the C<ghostdriver> Javascript code from this distribution
+to a directory accessible to you.
+
+=item *
+
+In your program, create the L<WWW::Mechanize::PhantomJS>
+object with
+
+  launch_arg => ['/path/to/ghostdriver/src/main.js' ],
+
+=back
+
+=head1 SEE ALSO
+
+=over 4
+
+=item *
+
+L<http://phantomjs.org> - the PhantomJS homepage
+
+=item *
+
+L<WWW::Mechanize> - the module whose API grandfathered this module
+
+=item *
+
+L<WWW::Scripter> - another WWW::Mechanize-workalike with Javascript support
+
+=item *
+
+L<WWW::Mechanize::Firefox> - a similar module with a visible application
+
+=back
+
+=head1 REPOSITORY
+
+The public repository of this module is 
+L<http://github.com/Corion/www-mechanize-phantomjs>.
+
+=head1 SUPPORT
+
+The public support forum of this module is
+L<http://perlmonks.org/>.
+
+=head1 TALKS
+
+I've given two talks about this module at Perl conferences:
+
+L<http://corion.net/talks/WWW-Mechanize-PhantomJS/www-mechanize-phantomjs.html|German Perl Workshop 2014, German>
+
+=head1 BUG TRACKER
+
+Please report bugs in this module via the RT CPAN bug queue at
+L<https://rt.cpan.org/Public/Dist/Display.html?Name=WWW-Mechanize-PhantomJS>
+or via mail to L<www-mechanize-phantomjs-Bugs@rt.cpan.org>.
+
+=head1 AUTHOR
+
+Max Maischein C<corion@cpan.org>
+
+=head1 COPYRIGHT (c)
+
+Copyright 2014 by Max Maischein C<corion@cpan.org>.
+
+=head1 LICENSE
+
+This module is released under the same terms as Perl itself.
+
+=cut

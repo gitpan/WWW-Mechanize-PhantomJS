@@ -1,11 +1,12 @@
 Makefile
 Makefile.old
 *.tar.gz
+*.tar
 *.bak
 pm_to_blib
 blib/
-WWW-Mechanize-WebDriver-*
-WWW-Mechanize-WebDriver-*/
+WWW-Mechanize-PhantomJS-*
+WWW-Mechanize-PhantomJS-*/
 phantomjs-versions/
 .releaserc
 cover_db
@@ -13,3 +14,4 @@ MYMETA.*
 ghostdriver/binding
 ghostdriver/test
 ghostdriver/tools
+screen.pdf
