@@ -21,7 +21,12 @@
    },
    "prereqs" : {
       "build" : {
-         "requires" : {}
+         "requires" : {
+            "File::Basename" : "0",
+            "File::Copy" : "0",
+            "File::Find" : "0",
+            "File::Path" : "0"
+         }
       },
       "configure" : {
          "requires" : {
@@ -37,7 +42,8 @@
             "LWP::Simple" : "0",
             "Object::Import" : "0",
             "Scalar::Util" : "0",
-            "Selenium::Remote::Driver" : "0",
+            "Selenium::Remote::Driver" : "0.18",
+            "WWW::Mechanize::Link" : "0",
             "perl" : "5.006"
          }
       }
@@ -48,5 +54,5 @@
          "url" : "http://github.com/Corion/www-mechanize-phantomjs"
       }
    },
-   "version" : "0.02"
+   "version" : "0.03"
 }

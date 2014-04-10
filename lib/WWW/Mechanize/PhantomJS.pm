@@ -10,7 +10,7 @@ use Carp qw(croak carp);
 use WWW::Mechanize::Link;
 
 use vars qw($VERSION %link_spec);
-$VERSION= '0.02';
+$VERSION= '0.03';
 
 =head1 NAME
 
@@ -55,6 +55,13 @@ Specify the log level of PhantomJS
 
 Specify the path to the PhantomJS executable.
 
+=item B<launch_ghostdriver>
+
+Filename of the C<ghostdriver> Javascript code
+to launch. The default is the file distributed with this module.
+
+  launch_ghostdriver => "devel/my/ghostdriver/main.js",
+
 =item B<launch_arg>
 
 Specify additional parameters to the PhantomJS executable.
@@ -83,10 +90,13 @@ sub new {
 
     # Launch PhantomJs
     $options{ launch_exe } ||= 'phantomjs';
+    (my $ghostdir_default= __FILE__) =~ s!\.pm$!!;
+    $ghostdir_default= File::Spec->catfile( $ghostdir_default, 'ghostdriver', 'main.js' );
+    $options{ launch_ghostdir } ||= $ghostdir_default;
     $options{ launch_arg } ||= [];
     push @{ $options{ launch_arg }}, "--PhantomJS=$options{ port }";
     push @{ $options{ launch_arg }}, "--logLevel=\U$options{ log }";
-    my $cmd= "| $options{ launch_exe } @{ $options{ launch_arg } }";
+    my $cmd= "| $options{ launch_exe } $options{ launch_ghostdir } @{ $options{ launch_arg } }";
     #warn $cmd;
     $options{ pid } ||= open my $fh, $cmd
         or die "Couldn't launch [$cmd]: $! / $?";
@@ -112,6 +122,38 @@ JS
      
      $self
 };
+
+=head2 C<< $mech->phantomjs_version >>
+
+  print $mech->phantomjs_version;
+
+Returns the version of the PhantomJS executable that is used.
+
+=cut
+
+sub phantomjs_version {
+    my( $self )= @_;
+    $self->{phantomjs_version} ||= do {
+        my $version= `$self->{ launch_exe } --version`;
+        $version=~ s!\s+!!g;
+        $version
+    };
+}
+
+=head2 C<< $mech->ghostdriver_version >>
+
+  print $mech->ghostdriver_version;
+
+Returns the version of the ghostdriver script that is used.
+
+=cut
+
+sub ghostdriver_version {
+    my( $self )= @_;
+    $self->{ghostdriver_version} ||= do {
+        $self->eval_in_phantomjs('return ghostdriver.version');
+    };
+}
 
 sub driver {
     $_[0]->{driver}
@@ -223,7 +265,8 @@ sub eval_in_phantomjs {
     my ($self, $code, @args) = @_;
     #my $tab = $self->tab;
 
-    $self->{driver}->{commands}->{'phantomExecute'}||= {
+    my $cmds= $self->driver->commands->get_cmds; # Initialize
+    $cmds->{'phantomExecute'}||= {
         'method' => 'POST',
         'url' => "session/:sessionId/phantom/execute"
     };
@@ -386,7 +429,6 @@ sub get {
     my ($self, $url, %options ) = @_;
     # We need to stringify $url so it can pass through JSON
     my $phantom_res= $self->driver->get( "$url" );
-
     $self->update_response( $phantom_res );
 };
 
@@ -395,7 +437,7 @@ sub get {
   $mech->get_local('test.html');
 
 Shorthand method to construct the appropriate
-C<< file:// >> URI and load it into Firefox. Relative
+C<< file:// >> URI and load it into PhantomJS. Relative
 paths will be interpreted as relative to C<$0>.
 
 This method accepts the same options as C<< ->get() >>.
@@ -475,14 +517,6 @@ sub post {
     #if ($options{no_cache}) {
     #  $flags = $self->repl->constant('nsIWebNavigation.LOAD_FLAGS_BYPASS_CACHE');
     #};
-    #if (! exists $options{synchronize}) {
-    #  $options{synchronize} = $self->events;
-    #};
-    #if( !ref $options{synchronize}) {
-    #  $options{synchronize} = $options{synchronize}
-    #                          ? $self->events
-    #                          : []
-    #};
 
     # If we don't have data, encode the parameters:
     if( !$options{ data }) {
@@ -532,16 +566,12 @@ JS
 =head2 C<< $mech->add_header( $name => $value, ... ) >>
 
     $mech->add_header(
-        'X-WWW-Mechanize-Firefox' => "I'm using it",
+        'X-WWW-Mechanize-PhantomJS' => "I'm using it",
         Encoding => 'text/klingon',
     );
 
 This method sets up custom headers that will be sent with B<every> HTTP(S)
-request that Firefox makes.
-
-Using multiple instances of WWW::Mechanize::Firefox objects with the same
-application together with changed request headers will most likely have weird
-effects. So don't do that.
+request that PhantomJS makes.
 
 Note that currently, we only support one value per header.
 
@@ -566,7 +596,7 @@ JS
     $mech->delete_header( 'User-Agent' );
     
 Removes HTTP headers from the agent's list of special headers. Note
-that Firefox may still send a header with its default value.
+that PhantomJS may still send a header with its default value.
 
 =cut
 
@@ -586,7 +616,7 @@ JS
 
     $mech->reset_headers();
 
-Removes all custom headers and makes Firefox send its defaults again.
+Removes all custom headers and makes PhantomJS send its defaults again.
 
 =cut
 
@@ -680,7 +710,7 @@ Returns the URL base for the current page.
 The base is either specified through a C<base>
 tag or is the current URL.
 
-This method is specific to WWW::Mechanize::Firefox
+This method is specific to WWW::Mechanize::PhantomJS.
 
 =cut
 
@@ -838,7 +868,7 @@ sub signal_http_status {
 sub response { $_[0]->{response} };
 *res = \&response;
 
-=head2 C<< $mech->back( [$synchronize] ) >>
+=head2 C<< $mech->back() >>
 
     $mech->back();
 
@@ -849,20 +879,12 @@ Returns the (new) response.
 =cut
 
 sub back {
-    my ($self, $synchronize) = @_;
-    $synchronize ||= (@_ != 2);
-    if( !ref $synchronize ) {
-        $synchronize = $synchronize
-                     ? $self->events
-                     : []
-    };
+    my ($self) = @_;
 
-    $self->_sync_call($synchronize, sub {
-        $self->driver->go_back;
-    });
+    $self->driver->go_back;
 }
 
-=head2 C<< $mech->forward( [$synchronize] ) >>
+=head2 C<< $mech->forward() >>
 
     $mech->forward();
 
@@ -873,17 +895,8 @@ Returns the (new) response.
 =cut
 
 sub forward {
-    my ($self, $synchronize) = @_;
-    $synchronize ||= (@_ != 2);
-    if( !ref $synchronize ) {
-        $synchronize = $synchronize
-                     ? $self->events
-                     : []
-    };
-
-    $self->_sync_call($synchronize, sub {
-        $self->driver->go_forward;
-    });
+    my ($self) = @_;
+    $self->driver->go_forward;
 }
 
 =head2 C<< $mech->uri() >>
@@ -955,15 +968,13 @@ This method is implemented via L<WWW::Mechanize::Plugin::Selector>.
 
 A method to find links, like L<WWW::Mechanize>'s
 C<< ->find_links >> method. This method returns DOM objects from
-Firefox instead of WWW::Mechanize::Link objects.
+PhantomJS instead of WWW::Mechanize::Link objects.
 
-Note that Firefox
+Note that PhantomJS
 might have reordered the links or frame links in the document
 so the absolute numbers passed via C<n>
 might not be the same between
-L<WWW::Mechanize> and L<WWW::Mechanize::Firefox>.
-
-Returns the DOM object as L<MozRepl::RemoteObject>::Instance.
+L<WWW::Mechanize> and L<WWW::Mechanize::PhantomJS>.
 
 The supported options are:
 
@@ -976,7 +987,7 @@ C<< text >> and C<< text_contains >> and C<< text_regex >>
 Match the text of the link as a complete string, substring or regular expression.
 
 Matching as a complete string or substring is a bit faster, as it is
-done in the XPath engine of Firefox.
+done in the XPath engine of PhantomJS.
 
 =item *
 
@@ -1219,8 +1230,7 @@ sub find_all_links_dom {
   $mech->follow_link( xpath => '//a[text() = "Click here!"]' );
 
 Follows the given link. Takes the same parameters that C<find_link_dom>
-uses. In addition, C<synchronize> can be passed to (not) force
-waiting for a new page to be loaded.
+uses.
 
 Note that C<< ->follow_link >> will only try to follow link-like
 things like C<A> tags.
@@ -1305,7 +1315,7 @@ sub activate_container {
     my @para_text = $mech->xpath('//p/text()', type => $mech->xpathResult('STRING_TYPE'));
     # Collects all paragraphs as text
 
-Runs an XPath query in Firefox against the current document.
+Runs an XPath query in PhantomJS against the current document.
 
 If you need more information about the returned results,
 use the C<< ->xpathEx() >> function.
@@ -1323,7 +1333,7 @@ search a node within a specific subframe of C<< $mech->document >>.
 
 C<< frames >> - if true, search all documents in all frames and iframes.
 This may or may not conflict with C<node>. This will default to the
-C<frames> setting of the WWW::Mechanize::Firefox object.
+C<frames> setting of the WWW::Mechanize::PhantomJS object.
 
 =item *
 
@@ -1368,7 +1378,7 @@ C<< type >> - force the return type of the query.
 
   type => $mech->xpathResult('ORDERED_NODE_SNAPSHOT_TYPE'),
 
-WWW::Mechanize::Firefox tries a best effort in giving you the appropriate
+WWW::Mechanize::PhantomJS tries a best effort in giving you the appropriate
 result of your query, be it a DOM node or a string or a number. In the case
 you need to restrict the return type, you can pass this in.
 
@@ -1469,8 +1479,7 @@ sub xpath {
                 #warn "Collecting frames";
                 #my $tag= $doc->get_tag_name;
                 #warn "Searching $doc->{id} for @$query";
-                @found= map { defined $_ ? @$_ : () }
-                        map { scalar $self->driver->find_elements( $_ => 'xpath' ) } @$query;
+                @found= map { $self->driver->find_elements( $_ => 'xpath' ) } @$query;
                 if( ! @found ) {
                     #warn "Nothing found matching @$query in frame";
                     #warn $self->content;
@@ -1514,7 +1523,7 @@ sub xpath {
     #@res
 
     # Determine if we want only one element
-    #     or a list, like WWW::Mechanize::Firefox
+    #     or a list, like WWW::Mechanize::PhantomJS
 
     if (! $zero_allowed and @res == 0) {
         $self->signal_condition( "No elements found for $options{ user_info }" );
@@ -1599,24 +1608,6 @@ do look like CSS selectors. It is equivalent to
 
     xpath => qq{//*[\@id="$id"]}
 
-=item *
-
-C<synchronize> - Synchronize the click (default is 1)
-
-Synchronizing means that WWW::Mechanize::Firefox will wait until
-one of the events listed in C<events> is fired. You want to switch
-it off when there will be no HTTP response or DOM event fired, for
-example for clicks that only modify the DOM.
-
-You can pass in a scalar that is a false value to not wait for
-any kind of event.
-
-Passing in an array reference will use the array elements as
-Javascript events to wait for.
-
-Passing in any other true value will use the value of C<< ->events >>
-as the list of events to wait for.
-
 =back
 
 Returns a L<HTTP::Response> object.
@@ -1655,26 +1646,13 @@ sub click {
         $options{ user_info } = "Button with name '$name'";
     };
 
-    if (! exists $options{ synchronize }) {
-        #$options{ synchronize } = $self->events;
-    } elsif( ! ref $options{ synchronize }) {
-        #$options{ synchronize } = $options{ synchronize }
-        #                        ? $self->events
-        #                        : [],
-    };
-    $options{ synchronize } ||= [];
-
     if ($options{ dom }) {
         @buttons = $options{ dom };
     } else {
         @buttons = $self->_option_query(%options);
     };
 
-    $self->_sync_call(
-        $options{ synchronize }, sub { # ,'abort'
-            $buttons[0]->click();
-        }
-    );
+    $buttons[0]->click();
 
     if (defined wantarray) {
         return $self->response
@@ -1712,18 +1690,6 @@ sub _default_limiter {
         $options->{ $default } = 1;
     };
     return ()
-};
-
-# Internal convenience method for dipatching a call either synchronized
-# or not
-sub _sync_call {
-    my ($self, $events, $cb) = @_;
-
-    if (@$events) {
-        $self->synchronize( $events, $cb );
-    } else {
-        $cb->();
-    };
 };
 
 =head2 C<< $mech->click_button( ... ) >>
@@ -2154,9 +2120,7 @@ sub submit {
     my ($self,$dom_form) = @_;
     $dom_form ||= $self->current_form;
     if ($dom_form) {
-        #warn sprintf "Submitting %s %s", $dom_form->get_tag_name, ref $dom_form;
-        $dom_form->submit(); # why don't we ->synchronize here??
-        #warn "Submitted";
+        $dom_form->submit();
         $self->signal_http_status;
 
         $self->clear_current_form;
@@ -2764,18 +2728,6 @@ Implement download progress
 
 Install the C<PhantomJS> executable
 
-=item *
-
-Copy the C<ghostdriver> Javascript code from this distribution
-to a directory accessible to you.
-
-=item *
-
-In your program, create the L<WWW::Mechanize::PhantomJS>
-object with
-
-  launch_arg => ['/path/to/ghostdriver/src/main.js' ],
-
 =back
 
 =head1 SEE ALSO
@@ -2785,6 +2737,10 @@ object with
 =item *
 
 L<http://phantomjs.org> - the PhantomJS homepage
+
+=item *
+
+L<https://github.com/detro/ghostdriver> - the ghostdriver homepage
 
 =item *
 
@@ -2833,5 +2789,35 @@ Copyright 2014 by Max Maischein C<corion@cpan.org>.
 =head1 LICENSE
 
 This module is released under the same terms as Perl itself.
+
+This distribution includes a modified copy of the ghostdriver code,
+which is released under the same terms as the ghostdriver code itself.
+The terms of the ghostdriver code are the BSD license, as found at
+L<https://github.com/detro/ghostdriver/blob/master/LICENSE.BSD>:
+
+    Copyright (c) 2014, Ivan De Marino <http://ivandemarino.me>
+    All rights reserved.
+
+    Redistribution and use in source and binary forms, with or without modification,
+    are permitted provided that the following conditions are met:
+
+    * Redistributions of source code must retain the above copyright notice,
+    this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above copyright notice,
+    this list of conditions and the following disclaimer in the documentation
+    and/or other materials provided with the distribution.
+
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+    ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+    WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+    DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+    ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+    (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+    LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+    ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+    SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+The ghostdriver code includes the Selenium WebDriver fragments.
 
 =cut
