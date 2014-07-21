@@ -1,5 +1,17 @@
 TO DO:
 
+0.06 20140721
+    . Re-release 0.04 as it was released during perl.org NOC move
+
+0.05 20140720
+    . Document ->post() not being implemented
+    . Re-release 0.04 as it was released during perl.org NOC move
+
+0.04 20140719
+    . Documentation fixes by Martin McGrath
+    . Documentation added for more methods, code shuffled around
+    + Fix breakage introduced by Selenium::Driver::Remote API changes
+
 0.03 20140410
     + Correct the documentation, which was mostly copied from the sister module,
       WWW::Mechanize::Firefox.
