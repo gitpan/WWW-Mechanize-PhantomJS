@@ -91,6 +91,7 @@ t/49-mech-get-file-lc-ct.html
 t/49-mech-get-file.html
 t/49-mech-get-file.t
 t/49-mech-nav.t
+t/49-port.t
 t/50-click.html
 t/50-click.t
 t/50-follow-link.t
@@ -125,6 +126,7 @@ t/53-mech-capture-js-error.html
 t/53-mech-capture-js-error.t
 t/53-mech-capture-js-noerror.html
 t/56-render-content.t
+t/57-parallel.t
 t/60-mech-custom-headers.t
 t/70-real-status.t
 t/99-changes.t

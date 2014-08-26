@@ -1,5 +1,19 @@
 TO DO:
 
+0.07 20140826
+    . Use file:// as local URI on non-Windows systems
+      Windows will still use file:/ .
+    . Make 'port' option actually work, plus test
+      Submitted by brianhorakh
+    . Fix ->content_as_png parameters
+      Submitted by dmuey
+    . Documentation fixes by Martin McGrath
+    . ->current_form behaves just like WWW::Mechanize::current_form
+      We always choose the first form if none is yet selected. (dk)
+    . We automatically try ports above 8910 until we find a free port. (dk)
+    . Support for more than one browser instance (dk)
+    . Error code 404 is signalled as code 400
+
 0.06 20140721
     . Re-release 0.04 as it was released during perl.org NOC move
 
