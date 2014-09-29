@@ -11,7 +11,7 @@ use WWW::Mechanize::Link;
 use IO::Socket::INET;
 
 use vars qw($VERSION %link_spec);
-$VERSION= '0.08';
+$VERSION= '0.09';
 
 =head1 NAME
 
@@ -56,6 +56,16 @@ Specify the log level of PhantomJS
 
 Specify the path to the PhantomJS executable.
 
+The default is C<phantomjs> as found via C<$ENV{PATH}>.
+You can also provide this information from the outside
+by setting C<$ENV{PHANTOMJS_EXE}>.
+
+=item B<phantomjs_arg>
+
+Additional command line arguments to C<phantomjs>.  (phantomjs -h)
+
+  phantomjs_arg => ['--frobnitz-the-foo=bar']
+
 =item B<launch_ghostdriver>
 
 Filename of the C<ghostdriver> Javascript code
@@ -65,7 +75,7 @@ to launch. The default is the file distributed with this module.
 
 =item B<launch_arg>
 
-Specify additional parameters to the PhantomJS executable.  (phantomjs -h)
+Specify additional parameters to the Ghostdriver script.
 
   launch_arg => [ "--some-new-parameter=foo" ],
   "--webdriver=$port",
@@ -74,6 +84,15 @@ Specify additional parameters to the PhantomJS executable.  (phantomjs -h)
   '--debug=true',
 
   note: these set config.xxx values in ghostrdriver/config.js
+
+=item B<cookie_file>
+
+Cookies are not directly persisted. If you pass in a path here,
+that file will be used to store or retrieve cookies.
+
+=item B<ignore_ssl_errors>
+
+If you want C<phantomjs> to ignore SSL errors, pass a true value here.
 
 =item B<driver>
 
@@ -87,6 +106,44 @@ for testing with C<use warnings qw(fatal)>.
 =back
 
 =cut
+
+sub build_command_line {
+    my( $class, $options )= @_;
+
+    $options->{ "log" } ||= 'OFF';
+
+    $options->{ launch_exe } ||= $ENV{PHANTOMJS_EXE} || 'phantomjs';
+    (my $ghostdir_default= __FILE__) =~ s!\.pm$!!;
+    $ghostdir_default= File::Spec->catfile( $ghostdir_default, 'ghostdriver', 'main.js' );
+    $options->{ launch_ghostdir } ||= $ghostdir_default;
+    $options->{ launch_arg } ||= [];
+    $options->{ phantomjs_arg } ||= [];
+    
+    # config.js defaults config.port to 8910
+    # this is the proper way to overwrite it (not sure wtf the PhantomJS parameter does above)
+    if ($options->{port}) { 
+        push @{ $options->{ launch_arg }}, "--port=$options->{ port }";
+    }  # PhantomJS version 1.9.7
+
+    push @{ $options->{ launch_arg }}, "--logLevel=\U$options->{ log }";
+
+    if( my $cookie_file= delete $options->{ cookie_file }) {
+        push @{ $options->{ phantomjs_arg }}, "--cookies-file=$cookie_file";
+    };
+
+    if( my $ignore_ssl_errors= delete $options->{ ignore_ssl_errors }) {
+        push @{ $options->{ phantomjs_arg }}, "--ignore-ssl-errors=yes";
+    };
+
+    my @cmd=( "|-", $options->{ launch_exe }, @{ $options->{phantomjs_arg}}, $options->{ launch_ghostdir }, @{ $options->{ launch_arg } } );
+    if( $^O =~ /mswin/i ) {
+        # Windows Perl doesn't support pipe-open with list
+        shift @cmd; # remove pipe-open
+        @cmd= "| " . join " ", @cmd;
+    };
+    
+    @cmd
+};
 
 sub new {
     my ($class, %options) = @_;
@@ -105,32 +162,25 @@ sub new {
     	$options{ port } = $port;
     }
 
-    $options{ "log" } ||= 'OFF';
-
     if (! exists $options{ autodie }) { $options{ autodie } = 1 };
 
     if( ! exists $options{ frames }) {
         $options{ frames }= 1;
     };
 
-    # Launch PhantomJs
-    $options{ launch_exe } ||= 'phantomjs';
-    (my $ghostdir_default= __FILE__) =~ s!\.pm$!!;
-    $ghostdir_default= File::Spec->catfile( $ghostdir_default, 'ghostdriver', 'main.js' );
-    $options{ launch_ghostdir } ||= $ghostdir_default;
-    $options{ launch_arg } ||= [];
-
-    # config.js defaults config.port to 8910
-    # this is the proper way to overwrite it (not sure wtf the PhantomJS parameter does above)
-    if ($options{port}) {  push @{ $options{ launch_arg }}, "--port=$options{ port }";  }  # PhantomJS version 1.9.7
-
-    push @{ $options{ launch_arg }}, "--logLevel=\U$options{ log }";
-    my $cmd= "| $options{ launch_exe } $options{ launch_ghostdir } @{ $options{ launch_arg } }";
+    my @cmd= $class->build_command_line( \%options );
     unless ($options{pid}) {
     	$options{ kill_pid } = 1;
-    	$options{ pid } = open my $fh, $cmd
-    	    or die "Couldn't launch [$cmd]: $! / $?";
-    	$options{ fh } = $fh;
+    	if( @cmd > 1 ) {
+    	    # We can do a proper pipe-open
+            $options{ pid } = open $options{fh}, @cmd
+                or die "Couldn't launch [@cmd]: $! / $?";
+        } else {
+    	    # We can't do a proper pipe-open, so do the single-arg open
+    	    # in the hope that everything has been set up properly
+            $options{ pid } = open $options{fh}, $cmd[0]
+                or die "Couldn't launch [$cmd[0]]: $! / $?";
+        };
 
         # Just to give PhantomJS time to start up, make sure it accepts connections
         my $wait = time + ($options{ wait } || 20);
@@ -1640,7 +1690,7 @@ sub xpath {
     };
     if (! $two_allowed and @res > 1) {
         #$self->highlight_node(@res);
-        warn $_->get_text() for @res;
+        warn $_->get_text() || '<no text>' for @res;
         $self->signal_condition( (scalar @res) . " elements found for $options{ user_info }" );
     };
 
@@ -1919,6 +1969,33 @@ sub active_form {
 
     my $form= $self->xpath( './ancestor-or-self::FORM', node => $focus, maybe => 1 );
 
+}
+
+=head2 C<< $mech->dump_forms( [$fh] ) >>
+
+Prints a dump of the forms on the current page to $fh. If $fh is not specified or is undef, it dumps to STDOUT.
+
+=cut
+
+sub dump_forms {
+    my $self = shift;
+    my $fh = shift || \*STDOUT;
+
+    for my $form ( $self->forms ) {
+        print {$fh} "[FORM] ", $form->get_attribute('name') || '<no name>', ' ', $form->get_attribute('action'), "\n";
+        #for my $f ($self->xpath( './/*', node => $form )) {
+        #for my $f ($self->xpath( './/*[contains(" "+translate(local-name(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")+" "," input textarea button select "
+        #                                        )]', node => $form )) {
+        for my $f ($self->xpath( './/*[contains(" input textarea button select ",concat(" ",translate(local-name(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")," "))]', node => $form )) {
+            my $type;
+            if($type= $f->get_attribute('type') || '' ) {
+                $type= " ($type)";
+            };
+            
+            print {$fh} "    [", $f->get_attribute('tagName'), $type, "] ", $f->get_attribute('name') || '<no name>', "\n";
+        };
+    }
+    return;
 }
 
 =head2 C<< $mech->form_name( $name [, %options] ) >>
@@ -2421,7 +2498,7 @@ See also
 
 L<http://code.google.com/p/selenium/issues/detail?id=4305>
 
-Frames are currently not really supported./root/update-wan-ip --verbose --server ns.datenzoo.de -h mychat.dyn.datenzoo.de -f /root/Kdyn-datenzoo-de+157+57591.privatevers
+Frames are currently not really supported.
 
 =cut
 
